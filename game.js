@@ -91,6 +91,21 @@ const terrC = document.createElement('canvas');
 terrC.width = LW; terrC.height = LH;
 const tctx = terrC.getContext('2d');
 let MASK = new Uint8Array(LW * LH);
+// ambient shadow of the terrain, rebuilt lazily whenever terrain changes
+let TERR_V = 0, SHAD_V = -1;
+const shadC = document.createElement('canvas');
+shadC.width = LW; shadC.height = LH;
+const shctx = shadC.getContext('2d');
+function terrShadow() {
+  if (SHAD_V === TERR_V) return shadC;
+  SHAD_V = TERR_V;
+  shctx.clearRect(0, 0, LW, LH);
+  shctx.save();
+  shctx.filter = 'blur(3px) brightness(0)';
+  shctx.drawImage(terrC, 0, 0);
+  shctx.restore();
+  return shadC;
+}
 function maskAt(x, y) {
   x |= 0; y |= 0;
   if (x < 0 || x >= LW || y < 0 || y >= LH) return (y >= LH) ? 2 : 0;
@@ -104,9 +119,21 @@ function paintRect(x, y, w, h, fill, steel) {
   g.addColorStop(0, shade(fill, 0.22)); g.addColorStop(0.12, fill); g.addColorStop(1, shade(fill, -0.45));
   tctx.fillStyle = steel ? '#2a3242' : g;
   tctx.fillRect(x, y, w, h);
-  // baked speckle, accent rim on top, dark underside
-  tctx.fillStyle = 'rgba(0,0,0,0.22)';
+  // sediment strata: dark bands with a faint lit lip, swaying per row
+  if (!steel) {
+    for (let sy = y + 10; sy < y + h - 5; sy += 13) {
+      const sway = Math.sin(sy * 0.7 + x * 0.13) * 2 | 0;
+      tctx.fillStyle = 'rgba(0,0,0,0.15)';
+      tctx.fillRect(x, sy + sway, w, 4);
+      tctx.fillStyle = 'rgba(255,255,255,0.05)';
+      tctx.fillRect(x, sy + sway - 1, w, 1);
+    }
+  }
+  // baked speckle: dark pits plus sparse rim-lit flecks, accent tint over all
+  tctx.fillStyle = 'rgba(0,0,0,0.26)';
   for (let i = 0; i < (w * h) / 300; i++) tctx.fillRect(x + rng(0, w - 3) | 0, y + rng(0, h - 3) | 0, 2, 2);
+  tctx.fillStyle = steel ? 'rgba(200,220,245,0.1)' : hexA(shade(PAINT_RIM, 0.45), 0.16);
+  for (let i = 0; i < (w * h) / 650; i++) tctx.fillRect(x + rng(0, w - 2) | 0, y + rng(0, h - 2) | 0, 1, 1);
   tctx.fillStyle = hexA(PAINT_RIM, steel ? 0.06 : 0.2);
   tctx.fillRect(x, y, w, h);
   tctx.fillStyle = steel ? 'rgba(200,220,245,0.6)' : hexA(shade(PAINT_RIM, 0.5), 0.95);
@@ -122,6 +149,14 @@ function paintRect(x, y, w, h, fill, steel) {
     tctx.fillRect(x + w - 2, y, 2, h);
     for (let sy = y + 8; sy < y + h - 4; sy += 14) { tctx.fillStyle = 'rgba(200,220,245,0.18)'; tctx.fillRect(x + 2, sy, w - 4, 2); }
   }
+  if (!steel) {
+    // side edges catch the rim light
+    tctx.fillStyle = hexA(shade(PAINT_RIM, 0.3), 0.35);
+    tctx.fillRect(x, y, 1, h); tctx.fillRect(x + w - 1, y, 1, h);
+  }
+  // underside occlusion, deeper than before: slabs sit in their own shade
+  tctx.fillStyle = 'rgba(0,0,0,0.25)';
+  tctx.fillRect(x, y + h - 6, w, 4);
   tctx.fillStyle = 'rgba(0,0,0,0.45)';
   tctx.fillRect(x, y + h - 2, w, 2);
   if (steel) {
@@ -134,6 +169,7 @@ function paintRect(x, y, w, h, fill, steel) {
     if (yy < 0 || yy >= LH) continue;
     MASK.fill(v, yy * LW + Math.max(0, x), yy * LW + Math.min(LW, x + w));
   }
+  TERR_V++;
 }
 function roughEdge(x, y, w, h) {
   // chew the cut line so destruction looks worked, and leave a hot edge
@@ -157,6 +193,7 @@ function carveRect(x, y, w, h) {
     for (let xx = Math.max(0, x); xx < Math.min(LW, x + w); xx++)
       if (MASK[yy * LW + xx] === 1) { MASK[yy * LW + xx] = 0; }
       else if (MASK[yy * LW + xx] === 2) { /* steel resists */ redrawSteelPixel(xx, yy); }
+  TERR_V++;
 }
 function carveCircle(cx, cy, r) {
   cx |= 0; cy |= 0; r |= 0;
@@ -170,6 +207,7 @@ function carveCircle(cx, cy, r) {
       if (MASK[yy * LW + xx] === 1) MASK[yy * LW + xx] = 0;
       else if (MASK[yy * LW + xx] === 2) redrawSteelPixel(xx, yy);
     }
+  TERR_V++;
 }
 function redrawSteelPixel(x, y) {
   tctx.fillStyle = '#2a3242';
@@ -185,6 +223,10 @@ function buildBrick(x, y, dir, color) {
   for (let yy = Math.max(0, y - bh) | 0; yy < Math.min(LH, y) | 0; yy++)
     for (let xx = Math.max(0, bx) | 0; xx < Math.min(LW, bx + bw) | 0; xx++)
       if (MASK[yy * LW + xx] === 0) MASK[yy * LW + xx] = 1;
+  TERR_V++;
+  // masonry glints: laying a brick strikes sparks
+  if (G && G.parts) for (let i = 0; i < 3; i++)
+    G.parts.push({ kind: 'spark', x: bx + rng(0, bw), y: y - bh + rng(-2, 2), vx: rng(-45, 45), vy: rng(-95, -30), color: shade(color, 0.45), life: rng(0.15, 0.32), t: 0 });
 }
 
 // ---------- levels ----------
@@ -539,7 +581,7 @@ function assignSkill(l, skill) {
 
 // ---------- particles ----------
 function addChips(x, y, color) {
-  for (let i = 0; i < 5; i++)
+  for (let i = 0; i < 9; i++)
     G.parts.push({ kind: 'chip', x: x + rng(-8, 8), y: y + rng(-4, 4), vx: rng(-70, 70), vy: rng(-110, -20), color: shade(color, rng(-0.2, 0.3)), life: rng(0.3, 0.6), t: 0 });
 }
 function bakeSmear(x, y) {
@@ -578,6 +620,8 @@ function addSparkle(x, y, color) {
     G.parts.push({ kind: 'chip', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 60, color, life: rng(0.3, 0.55), t: 0 });
   }
   G.parts.push({ kind: 'flash', x, y, r: 36, color, life: 0.2, t: 0 });
+  for (let i = 0; i < 6; i++)                        // celebratory rays fanning upward
+    G.parts.push({ kind: 'ray', x, y, a: -Math.PI / 2 + (i - 2.5) * 0.42, r: 8, color, life: 0.32, t: 0 });
 }
 function addPop(x, y, txt, color) { G.pops.push({ x, y, txt, color, t: 0, life: 0.9 }); }
 
@@ -644,6 +688,7 @@ function tickFX(dt) {
     else if (p.kind === 'spark') { p.vy += 120 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
     else if (p.kind === 'smoke') { p.vy -= 30 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
     else if (p.kind === 'ring') p.r += 380 * dt;
+    else if (p.kind === 'ray') p.r += 260 * dt;
   }
   for (let i = G.pops.length - 1; i >= 0; i--) { const o = G.pops[i]; o.t += dt; o.y -= 30 * dt; if (o.t >= o.life) G.pops.splice(i, 1); }
   if (G.shake > 0) G.shake = Math.max(0, G.shake - 26 * dt);
@@ -691,7 +736,7 @@ function draw() {
   }
   // parallax silhouette strata behind the level
   srand(555 + G.level);
-  for (const [par, lum, n2] of [[0.2, 0.05, 10], [0.45, 0.09, 7]]) {
+  for (const [par, lum, n2] of [[0.2, 0.032, 10], [0.45, 0.055, 7]]) {
     ctx.save();
     ctx.translate(-G.cam * par, 0);
     ctx.fillStyle = hexA(L.rim, lum);
@@ -725,7 +770,11 @@ function draw() {
   fg.addColorStop(0, 'rgba(0,0,0,0)'); fg.addColorStop(1, hexA(L.rim, 0.14));
   ctx.fillStyle = fg;
   ctx.fillRect(0, VH - 220, LW, 220);
-  // terrain
+  // terrain, lifted off the backdrop by its own ambient shadow
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.drawImage(terrShadow(), 0, 7);
+  ctx.restore();
   ctx.drawImage(terrC, 0, 0);
   // hatch
   drawHatch(L);
@@ -791,23 +840,7 @@ function draw() {
       ctx.save();
       ctx.translate(px2, H / 2 + 52);
       ctx.scale(2, 2);
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      const gp = ctx.createRadialGradient(0, -8, 0, 0, -8, 16);
-      gp.addColorStop(0, hexA('#3dffc8', 0.25)); gp.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = gp;
-      ctx.beginPath(); ctx.arc(0, -8, 16, 0, 7); ctx.fill();
-      ctx.restore();
-      ctx.fillStyle = '#1f8fc0';
-      ctx.beginPath(); ctx.roundRect(-3.5, -10, 7, 10, 2.5); ctx.fill();
-      ctx.fillStyle = '#e8f4ff';
-      ctx.beginPath(); ctx.arc(1, -12.5, 3.6, 0, 7); ctx.fill();
-      ctx.fillStyle = '#3dffc8';
-      ctx.beginPath(); ctx.arc(1, -15, 2.4, Math.PI, 0); ctx.fill();
-      ctx.strokeStyle = '#c8e8ff'; ctx.lineWidth = 1.6;
-      ctx.beginPath(); ctx.moveTo(-1.5, -2); ctx.lineTo(-1.5 - wob2, 0.5); ctx.moveTo(1.5, -2); ctx.lineTo(1.5 + wob2, 0.5); ctx.stroke();
-      ctx.strokeStyle = '#a8d4f0'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(-1, -8); ctx.lineTo(-1 + wob2 * 0.7, -4.5); ctx.moveTo(1, -8); ctx.lineTo(1 - wob2 * 0.7, -4.5); ctx.stroke();
+      drawChibi(1, wob2, Math.abs(Math.sin(ph2)) * 2, '#3dffc8', false);
       ctx.restore();
     }
     bannerButton((G.level + 1 >= LEVELS.length ? 'FINISH' : 'NEXT LEVEL') + (TOUCH ? '' : '  ·  SPACE'), L.rim);
@@ -821,21 +854,9 @@ function draw() {
       ctx.save();
       ctx.translate(px2, H / 2 + 56);
       ctx.scale(2.2, 2.2);
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      const gp2 = ctx.createRadialGradient(0, -6, 0, 0, -6, 14);
-      gp2.addColorStop(0, hexA('#ff4545', 0.1 * gutter)); gp2.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = gp2;
-      ctx.beginPath(); ctx.arc(0, -6, 14, 0, 7); ctx.fill();
-      ctx.restore();
       ctx.globalAlpha = gutter;
       ctx.rotate(i % 2 ? 0.55 : -0.45);
-      ctx.fillStyle = '#1a6d94';
-      ctx.beginPath(); ctx.roundRect(-3.5, -8, 7, 9, 2.5); ctx.fill();
-      ctx.fillStyle = '#d8ecfa';
-      ctx.beginPath(); ctx.arc(1, -10, 3.4, 0, 7); ctx.fill();
-      ctx.strokeStyle = '#9cc4dc'; ctx.lineWidth = 1.4;
-      ctx.beginPath(); ctx.moveTo(-1.5, 1); ctx.lineTo(-4, 3); ctx.moveTo(1.5, 1); ctx.lineTo(4, 2.5); ctx.stroke();
+      drawChibi(1, 0, 0, '#ff4545', true);
       ctx.globalAlpha = 1;
       ctx.restore();
     }
@@ -857,21 +878,57 @@ function drawHatch(L) {
   ctx.moveTo(hx - 12, hy - 6); ctx.lineTo(hx + 12, hy - 6); ctx.lineTo(hx + 26, hy + 70); ctx.lineTo(hx - 26, hy + 70);
   ctx.closePath(); ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
-  // housing
+  // housing: a gabled machine with real mass
   const hg = ctx.createLinearGradient(0, hy - 34, 0, hy);
-  hg.addColorStop(0, '#2a3242'); hg.addColorStop(1, '#161c28');
+  hg.addColorStop(0, '#3a445c'); hg.addColorStop(0.5, '#242c3e'); hg.addColorStop(1, '#131926');
   ctx.fillStyle = hg;
   ctx.beginPath();
   ctx.moveTo(hx - 28, hy - 4); ctx.lineTo(hx - 16, hy - 30); ctx.lineTo(hx + 16, hy - 30); ctx.lineTo(hx + 28, hy - 4);
   ctx.closePath(); ctx.fill();
+  // roof ridge catches the light
+  ctx.fillStyle = 'rgba(220,240,255,0.2)';
+  ctx.beginPath();
+  ctx.moveTo(hx - 16, hy - 30); ctx.lineTo(hx + 16, hy - 30); ctx.lineTo(hx + 17.5, hy - 27); ctx.lineTo(hx - 17.5, hy - 27);
+  ctx.closePath(); ctx.fill();
+  // the dark mouth the lings drip from
+  ctx.fillStyle = '#04060b';
+  ctx.beginPath();
+  ctx.moveTo(hx - 15, hy - 4); ctx.lineTo(hx - 10, hy - 17); ctx.lineTo(hx + 10, hy - 17); ctx.lineTo(hx + 15, hy - 4);
+  ctx.closePath(); ctx.fill();
+  const iris = open ? 0.5 + Math.sin(G.time * 4) * 0.35 : 0.08;
+  ctx.fillStyle = hexA(L.rim, iris);                 // inner glow breathing in the mouth
+  ctx.beginPath(); ctx.ellipse(hx, hy - 7, 10, 4 * (open ? 1 : 0.3), 0, 0, 7); ctx.fill();
+  // swing doors hanging from the mouth edges
+  const swing = open ? 0.95 + Math.sin(G.time * 4) * 0.12 : 0.15;
+  const dxs = Math.sin(swing) * 5, dys = Math.cos(swing) * 11;
+  ctx.strokeStyle = '#48546e'; ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(hx - 14, hy - 5); ctx.lineTo(hx - 14 - dxs, hy - 5 + dys);
+  ctx.moveTo(hx + 14, hy - 5); ctx.lineTo(hx + 14 + dxs, hy - 5 + dys);
+  ctx.stroke();
+  ctx.strokeStyle = hexA(L.rim, 0.55); ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(hx - 13, hy - 5); ctx.lineTo(hx - 13 - dxs * 0.9, hy - 5 + dys * 0.9);
+  ctx.moveTo(hx + 13, hy - 5); ctx.lineTo(hx + 13 + dxs * 0.9, hy - 5 + dys * 0.9);
+  ctx.stroke();
+  // frame stroke + rivets
   ctx.strokeStyle = hexA(L.rim, 0.9); ctx.lineWidth = 2.5;
   ctx.shadowColor = L.rim; ctx.shadowBlur = 12;
-  ctx.stroke();
-  // animated iris
-  const iris = open ? 0.5 + Math.sin(G.time * 4) * 0.35 : 0.08;
+  ctx.beginPath();
+  ctx.moveTo(hx - 28, hy - 4); ctx.lineTo(hx - 16, hy - 30); ctx.lineTo(hx + 16, hy - 30); ctx.lineTo(hx + 28, hy - 4);
+  ctx.closePath(); ctx.stroke();
   ctx.shadowBlur = 0;
-  ctx.fillStyle = hexA(L.rim, iris);
-  ctx.beginPath(); ctx.ellipse(hx, hy - 8, 12, 6 * (open ? 1 : 0.3), 0, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(220,240,255,0.5)';
+  for (const [rx, ry] of [[-22, -9], [-17.5, -20], [17.5, -20], [22, -9]]) ctx.fillRect(hx + rx - 1, hy + ry - 1, 2, 2);
+  // apex beacon: blinks while the door still owes lings
+  ctx.fillStyle = '#2a3242';
+  ctx.fillRect(hx - 1.5, hy - 34, 3, 4);
+  const blink = open ? (Math.sin(G.time * 6) > 0.2 ? 1 : 0.3) : 0.12;
+  ctx.save();
+  ctx.shadowColor = L.rim; ctx.shadowBlur = 9 * blink;
+  ctx.fillStyle = hexA(L.rim, blink);
+  ctx.beginPath(); ctx.arc(hx, hy - 35, 2.2, 0, 7); ctx.fill();
+  ctx.restore();
   ctx.restore();
 }
 function drawExit(L) {
@@ -885,6 +942,13 @@ function drawExit(L) {
   ctx.beginPath(); ctx.arc(ex, ey - 14, 46, 0, 7); ctx.fill();
   ctx.restore();
   ctx.save();
+  // frame posts with lit caps: the door is a built thing, not a decal
+  ctx.fillStyle = '#1a2130';
+  ctx.fillRect(ex - 25, ey - 32, 6, 32); ctx.fillRect(ex + 19, ey - 32, 6, 32);
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  ctx.fillRect(ex - 25, ey - 32, 2, 32); ctx.fillRect(ex + 19, ey - 32, 2, 32);
+  ctx.fillStyle = hexA(L.rim, 0.85);
+  ctx.fillRect(ex - 26, ey - 35, 8, 3); ctx.fillRect(ex + 18, ey - 35, 8, 3);
   // portal interior with rising drift
   const ig = ctx.createLinearGradient(0, ey - 38, 0, ey);
   ig.addColorStop(0, hexA(L.rim, 0.5)); ig.addColorStop(1, hexA(shade(L.rim, -0.25), 0.35));
@@ -907,6 +971,16 @@ function drawExit(L) {
   ctx.beginPath();
   ctx.moveTo(ex - 18, ey); ctx.lineTo(ex - 18, ey - 26); ctx.arc(ex, ey - 26, 18, Math.PI, 0); ctx.lineTo(ex + 18, ey);
   ctx.stroke();
+  // crown beacon over the arch
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#232b3c';
+  ctx.fillRect(ex - 1.5, ey - 49, 3, 5);
+  const bk = 0.55 + Math.sin(G.time * 5) * 0.45;
+  ctx.save();
+  ctx.shadowColor = L.rim; ctx.shadowBlur = 10 * bk;
+  ctx.fillStyle = hexA(L.rim, 0.35 + 0.65 * bk);
+  ctx.beginPath(); ctx.arc(ex, ey - 51, 2.6, 0, 7); ctx.fill();
+  ctx.restore();
   // ground pulse pad
   ctx.globalCompositeOperation = 'lighter';
   ctx.fillStyle = hexA(L.rim, 0.32 * (0.6 + Math.sin(G.time * 3) * 0.4));
@@ -943,28 +1017,43 @@ function drawLing(l) {
   if (l.state === 'digger') { ctx.scale(1, 0.85); ctx.translate(0, 1); }        // crouched over the shovel
   if (l.state === 'miner') ctx.rotate(l.dir * 0.28);                            // leaning into the pick
   if (l.state === 'climbing') ctx.translate(l.dir * 2, 0);                      // hugging the wall
-  // body
-  ctx.fillStyle = '#1f8fc0';
-  ctx.beginPath(); ctx.roundRect(-3.5, -10 + bob * 0.4, 7, 10 - bob * 0.4, 2.5); ctx.fill();
-  // head + neon hair, offset to the facing side
+  // body: two-tone — lit jacket over darker legs, so the torso reads as clothing
+  const bTop = -10 + bob * 0.4, bH = 10 - bob * 0.4;
+  ctx.fillStyle = '#14587f';
+  ctx.beginPath(); ctx.roundRect(-3.5, bTop, 7, bH, 2.5); ctx.fill();
+  ctx.fillStyle = '#2fa8de';
+  ctx.beginPath(); ctx.roundRect(-3.5, bTop, 7, bH * 0.62, 2.5); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';                    // shoulder light
+  ctx.beginPath(); ctx.roundRect(-3.5, bTop, 7, 2.2, 2.2); ctx.fill();
+  ctx.fillStyle = 'rgba(5,18,32,0.6)';                        // belt
+  ctx.fillRect(-3.5, bTop + bH * 0.62, 7, 1);
+  // head, offset to the facing side
   ctx.fillStyle = '#e8f4ff';
   ctx.beginPath(); ctx.arc(l.dir * 1.2, -12.5 + bob * 0.3, 3.6, 0, 7); ctx.fill();
   // facing eye
   ctx.fillStyle = '#0a2030';
   ctx.beginPath(); ctx.arc(l.dir * 2.8, -12.7, 1.0, 0, 7); ctx.fill();
+  // the neon mop that makes it a neonling: bigger, with stray spikes
   ctx.save();
-  ctx.shadowColor = '#3dffc8'; ctx.shadowBlur = 6;
+  ctx.shadowColor = '#3dffc8'; ctx.shadowBlur = 7;
   ctx.fillStyle = '#3dffc8';
-  ctx.beginPath(); ctx.arc(l.dir * 1.0, -15 + bob * 0.3, 2.4, Math.PI, 0); ctx.fill();
+  ctx.beginPath(); ctx.arc(l.dir * 1.0, -14.6 + bob * 0.3, 3.1, Math.PI * 0.97, Math.PI * 0.03); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(l.dir * -1.4, -16.2 + bob * 0.3); ctx.lineTo(l.dir * -2.5, -18.3 + bob * 0.3); ctx.lineTo(l.dir * -0.3, -17.1 + bob * 0.3);
+  ctx.moveTo(l.dir * 1.2, -17 + bob * 0.3); ctx.lineTo(l.dir * 2.0, -19 + bob * 0.3); ctx.lineTo(l.dir * 2.9, -16.6 + bob * 0.3);
+  ctx.closePath(); ctx.fill();
   ctx.restore();
-  // striding legs, opposed
+  // striding legs, opposed, with feet that plant
   ctx.strokeStyle = '#c8e8ff'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(-1.5, -2); ctx.lineTo(-1.5 - wob, 0.5);
   ctx.moveTo(1.5, -2); ctx.lineTo(1.5 + wob, 0.5);
   ctx.stroke();
+  ctx.fillStyle = '#f2fbff';
+  ctx.beginPath(); ctx.arc(-1.5 - wob, 0.8, 1.15, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(1.5 + wob, 0.8, 1.15, 0, 7); ctx.fill();
   // arms: every state holds a pose
-  ctx.strokeStyle = '#a8d4f0'; ctx.lineWidth = 2.1;
+  ctx.strokeStyle = '#bfe2f8'; ctx.lineWidth = 2.1;
   ctx.beginPath();
   if (l.state === 'walker') {
     ctx.moveTo(-1, -8); ctx.lineTo(-1 + wob * 0.7, -4.5);
@@ -995,7 +1084,9 @@ function drawLing(l) {
   // working badges: dust fountain / spark arc / ground stripe
   if (l.state === 'digger') {
     ctx.fillStyle = 'rgba(200,190,170,0.7)';
-    for (let d2 = 0; d2 < 4; d2++) ctx.fillRect(-6 + ((l.id + d2 * 7 + (l.t * 30 | 0)) % 12), 2 - ((l.t * 40 + d2 * 9) % 14), 2, 2);
+    for (let d2 = 0; d2 < 7; d2++) ctx.fillRect(-8 + ((l.id + d2 * 7 + (l.t * 30 | 0)) % 16), 2 - ((l.t * 40 + d2 * 9) % 15), 2, 2);
+    ctx.fillStyle = 'rgba(255,250,235,0.8)';
+    for (let d2 = 0; d2 < 3; d2++) ctx.fillRect(-6 + ((l.id * 3 + d2 * 11 + (l.t * 36 | 0)) % 12), 1 - ((l.t * 46 + d2 * 13) % 12), 1.5, 1.5);
   }
   if (l.state === 'basher') {
     ctx.strokeStyle = hexA(SKILL_COL.basher, 0.85); ctx.lineWidth = 2;
@@ -1005,7 +1096,11 @@ function drawLing(l) {
     ctx.strokeStyle = hexA(SKILL_COL.miner, 0.9); ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(l.dir * 7, 0, 6, l.dir > 0 ? 0.3 : Math.PI - 1.7, l.dir > 0 ? 1.7 : Math.PI - 0.3); ctx.stroke();
     ctx.fillStyle = 'rgba(200,190,170,0.7)';
-    for (let d2 = 0; d2 < 3; d2++) ctx.fillRect(l.dir * (4 + ((l.id + d2 * 5 + (l.t * 26 | 0)) % 9)), 2 - ((l.t * 30 + d2 * 7) % 10), 2, 2);
+    for (let d2 = 0; d2 < 5; d2++) ctx.fillRect(l.dir * (4 + ((l.id + d2 * 5 + (l.t * 26 | 0)) % 10)), 2 - ((l.t * 30 + d2 * 7) % 11), 2, 2);
+    if (Math.sin(l.t * 13) > 0.8) {                 // pick strikes: a white glint at the tip
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(l.dir * 9 - 1, -1, 2, 2);
+    }
   }
   if (l.state === 'ohno') {
     ctx.strokeStyle = '#ffd12a'; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
@@ -1081,6 +1176,13 @@ function drawParticles() {
       ctx.globalAlpha = k * 0.8;
       ctx.strokeStyle = p.color; ctx.lineWidth = 5 * k + 1;
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.stroke();
+    } else if (p.kind === 'ray') {
+      ctx.globalAlpha = k * 0.9;
+      ctx.strokeStyle = p.color; ctx.lineWidth = 2 * k + 0.6; ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(p.x + Math.cos(p.a) * p.r * 0.45, p.y + Math.sin(p.a) * p.r * 0.45);
+      ctx.lineTo(p.x + Math.cos(p.a) * p.r, p.y + Math.sin(p.a) * p.r);
+      ctx.stroke();
     }
   }
   ctx.restore();
@@ -1116,6 +1218,16 @@ function drawMarquee(L) {
   ctx.shadowColor = L.rim; ctx.shadowBlur = 10;
   ctx.fillText(L.name, W / 2, 27);
   ctx.restore();
+  // rim-hued ticks flanking the level name
+  const nw2 = ctx.measureText(L.name).width;
+  ctx.fillStyle = hexA(L.rim, 0.75);
+  for (const sgn of [-1, 1]) {
+    ctx.save();
+    ctx.translate(W / 2 + sgn * (nw2 / 2 + 26), 21);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-3, -3, 6, 6);
+    ctx.restore();
+  }
   ctx.letterSpacing = '2px';
   ctx.font = '700 13px Verdana, sans-serif';
   ctx.textAlign = 'left';
@@ -1182,9 +1294,13 @@ function drawHUD(L) {
     ctx.font = `800 20px ${MONO}`;
     ctx.fillStyle = n > 0 ? '#ffffff' : 'rgba(200,220,245,0.45)';
     ctx.fillText(String(n), bx + bw / 2, by + 72);
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    const kg = ctx.createLinearGradient(0, by + 4, 0, by + 17);
+    kg.addColorStop(0, 'rgba(255,255,255,0.13)'); kg.addColorStop(0.5, 'rgba(255,255,255,0.05)'); kg.addColorStop(1, 'rgba(0,0,0,0.15)');
+    ctx.fillStyle = kg;
     ctx.strokeStyle = 'rgba(160,195,230,0.4)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.roundRect(bx + bw - 17, by + 4, 13, 13, 3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(bx + bw - 15, by + 5, 9, 1);
     ctx.font = `800 9px ${MONO}`;
     ctx.fillStyle = 'rgba(225,240,255,0.9)';
     ctx.fillText(String(i + 1), bx + bw - 10.5, by + 13.5);
@@ -1224,10 +1340,15 @@ function drawHUD(L) {
   btns.forEach(([k2, name, on], i) => {
     const dx = 1188, dy = HY + 46 + i * 21;
     const kw = k2.length > 1 ? 24 : 18;
-    ctx.fillStyle = on ? hexA(L.rim, 0.3) : 'rgba(255,255,255,0.05)';
+    const cg = ctx.createLinearGradient(0, dy - 12, 0, dy + 4);
+    if (on) { cg.addColorStop(0, hexA(L.rim, 0.42)); cg.addColorStop(1, hexA(L.rim, 0.2)); }
+    else { cg.addColorStop(0, 'rgba(255,255,255,0.12)'); cg.addColorStop(0.5, 'rgba(255,255,255,0.04)'); cg.addColorStop(1, 'rgba(0,0,0,0.14)'); }
+    ctx.fillStyle = cg;
     ctx.strokeStyle = on ? L.rim : 'rgba(160,195,230,0.35)';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.roundRect(dx, dy - 12, kw, 16, 3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = on ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.16)';
+    ctx.fillRect(dx + 2, dy - 11, kw - 4, 1);
     ctx.font = `800 10px ${MONO}`;
     ctx.textAlign = 'center';
     ctx.fillStyle = on ? '#ffffff' : 'rgba(200,225,250,0.85)';
@@ -1278,6 +1399,53 @@ function drawSkillIcon(s, cx2, cy2, lit) {
     ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(0, 6); ctx.moveTo(-4, 2); ctx.lineTo(0, 6); ctx.lineTo(4, 2); ctx.stroke();
   }
   ctx.restore();
+}
+function drawChibi(dir, wob, bob, glowCol, slump) {
+  // shared showcase ling for title / banner scenes — same anatomy as drawLing
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const gl = ctx.createRadialGradient(0, -8, 0, 0, -8, 18);
+  gl.addColorStop(0, hexA(glowCol, slump ? 0.12 : 0.28)); gl.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gl;
+  ctx.beginPath(); ctx.arc(0, -8, 18, 0, 7); ctx.fill();
+  ctx.restore();
+  const bTop = -10 + bob * 0.4, bH = 10 - bob * 0.4;
+  ctx.fillStyle = slump ? '#123f5c' : '#14587f';
+  ctx.beginPath(); ctx.roundRect(-3.5, bTop, 7, bH, 2.5); ctx.fill();
+  ctx.fillStyle = slump ? '#1f7aa6' : '#2fa8de';
+  ctx.beginPath(); ctx.roundRect(-3.5, bTop, 7, bH * 0.62, 2.5); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.beginPath(); ctx.roundRect(-3.5, bTop, 7, 2.2, 2.2); ctx.fill();
+  ctx.fillStyle = slump ? '#c9deee' : '#e8f4ff';
+  ctx.beginPath(); ctx.arc(dir * 1.2, -12.5 + bob * 0.3, 3.6, 0, 7); ctx.fill();
+  ctx.fillStyle = '#0a2030';
+  ctx.beginPath(); ctx.arc(dir * 2.8, -12.7, 1.0, 0, 7); ctx.fill();
+  ctx.save();
+  if (!slump) { ctx.shadowColor = '#3dffc8'; ctx.shadowBlur = 6; }
+  ctx.fillStyle = slump ? '#2a8f78' : '#3dffc8';
+  ctx.beginPath(); ctx.arc(dir * 1.0, -14.6 + bob * 0.3, 3.1, Math.PI * 0.97, Math.PI * 0.03); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(dir * -1.4, -16.2); ctx.lineTo(dir * -2.5, -18.3); ctx.lineTo(dir * -0.3, -17.1);
+  ctx.moveTo(dir * 1.2, -17); ctx.lineTo(dir * 2.0, -19); ctx.lineTo(dir * 2.9, -16.6);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = '#c8e8ff'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-1.5, -2); ctx.lineTo(-1.5 - wob, 0.5);
+  ctx.moveTo(1.5, -2); ctx.lineTo(1.5 + wob, 0.5);
+  ctx.stroke();
+  ctx.fillStyle = '#f2fbff';
+  ctx.beginPath(); ctx.arc(-1.5 - wob, 0.8, 1.15, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(1.5 + wob, 0.8, 1.15, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#bfe2f8'; ctx.lineWidth = 2.1;
+  ctx.beginPath();
+  if (slump) {
+    ctx.moveTo(-1.5, -7); ctx.lineTo(-4, -3); ctx.moveTo(1.5, -7); ctx.lineTo(4, -3.5);
+  } else {
+    ctx.moveTo(-1, -8); ctx.lineTo(-1 + wob * 0.7, -4.5);
+    ctx.moveTo(1, -8); ctx.lineTo(1 - wob * 0.7, -4.5);
+  }
+  ctx.stroke();
 }
 function banner(title, color, sub) {
   ctx.save();
@@ -1337,22 +1505,8 @@ function drawTitle() {
     ctx.save();
     ctx.translate(lx, gy);
     ctx.scale(2.4, 2.4);
-    const wob = Math.sin(G.time * 16 + i) * 1.4;
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    const gl = ctx.createRadialGradient(0, -8, 0, 0, -8, 20);
-    gl.addColorStop(0, 'rgba(95,212,255,0.3)'); gl.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = gl;
-    ctx.beginPath(); ctx.arc(0, -8, 20, 0, 7); ctx.fill();
-    ctx.restore();
-    ctx.fillStyle = '#1f8fc0';
-    ctx.beginPath(); ctx.roundRect(-3.5, -10, 7, 10, 2.5); ctx.fill();
-    ctx.fillStyle = '#e8f4ff';
-    ctx.beginPath(); ctx.arc(0, -12.5, 3.6, 0, 7); ctx.fill();
-    ctx.fillStyle = '#3dffc8';
-    ctx.beginPath(); ctx.arc(0, -15, 2.4, Math.PI, 0); ctx.fill();
-    ctx.strokeStyle = '#c8e8ff'; ctx.lineWidth = 1.6;
-    ctx.beginPath(); ctx.moveTo(-1.5, 0); ctx.lineTo(-1.5 - wob, 0); ctx.moveTo(1.5, 0); ctx.lineTo(1.5 + wob, 0); ctx.stroke();
+    const ph = lx * 0.55 + i * 2.39;            // stride keyed to ground covered, like in play
+    drawChibi(1, Math.sin(ph) * 2.4, Math.abs(Math.sin(ph)) * 2, '#5fd4ff', false);
     ctx.restore();
   }
   const by = 130, bh = 300;
@@ -1369,10 +1523,31 @@ function drawTitle() {
   ctx.font = '900 96px "Arial Black", Arial, sans-serif';
   ctx.letterSpacing = '10px';
   ctx.save();
-  ctx.shadowColor = '#33d6ff'; ctx.shadowBlur = 16;
+  ctx.shadowColor = '#33d6ff'; ctx.shadowBlur = 22;
   ctx.fillStyle = '#7fdcff'; ctx.fillText('NEONLINGS', W / 2, ly);
-  ctx.shadowBlur = 4;
-  ctx.fillStyle = '#ffffff'; ctx.fillText('NEONLINGS', W / 2, ly);
+  ctx.shadowBlur = 0;
+  const tg = ctx.createLinearGradient(0, ly - 72, 0, ly + 6);
+  tg.addColorStop(0, '#ffffff'); tg.addColorStop(0.52, '#dff7ff');
+  tg.addColorStop(0.53, '#8fd9f8'); tg.addColorStop(1, '#46abdf');
+  ctx.fillStyle = tg; ctx.fillText('NEONLINGS', W / 2, ly);
+  ctx.restore();
+  // underline rule with lit terminals
+  ctx.fillStyle = hexA('#33d6ff', 0.7);
+  ctx.fillRect(W / 2 - 318, ly + 16, 636, 2);
+  ctx.fillStyle = '#7fdcff';
+  ctx.fillRect(W / 2 - 326, ly + 13, 6, 8); ctx.fillRect(W / 2 + 320, ly + 13, 6, 8);
+  // one floater drifting past the wordmark
+  ctx.save();
+  ctx.translate(W / 2 + 424, 226 + Math.sin(G.time * 1.6) * 9);
+  ctx.scale(2, 2);
+  drawChibi(-1, Math.sin(G.time * 3) * 0.8, 0, '#5fd4ff', false);
+  ctx.strokeStyle = SKILL_COL.floater; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(0, -24, 11, Math.PI, 0); ctx.stroke();
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(-11, -24); ctx.quadraticCurveTo(-5.5, -21, 0, -24); ctx.quadraticCurveTo(5.5, -21, 11, -24);
+  ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -24); ctx.lineTo(0, -16); ctx.stroke();
   ctx.restore();
   ctx.letterSpacing = '5px';
   ctx.font = '600 17px Verdana, sans-serif';
