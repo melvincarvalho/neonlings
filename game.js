@@ -288,6 +288,8 @@ const LEVELS = [
 let G = null;
 const keys = {};
 let mouse = { x: 0, y: 0, down: false, clicked: false };
+const TOUCH = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+let touchMode = false;                 // set on first touch: disables mouse edge-scroll
 
 function newGame(seed, attract) {
   srand(seed);
@@ -650,8 +652,10 @@ function tickFX(dt) {
 function camTick(dt) {
   if (keys.ArrowLeft || keys.a) G.cam -= 420 * dt;
   if (keys.ArrowRight || keys.d) G.cam += 420 * dt;
-  if (mouse.x < 30) G.cam -= 420 * dt;
-  if (mouse.x > W - 30) G.cam += 420 * dt;
+  if (!touchMode) {                    // a touch leaves mouse.x parked: no edge-scroll
+    if (mouse.x < 30) G.cam -= 420 * dt;
+    if (mouse.x > W - 30) G.cam += 420 * dt;
+  }
   G.cam = clamp(G.cam, 0, LW - VW);
 }
 
@@ -806,7 +810,7 @@ function draw() {
       ctx.beginPath(); ctx.moveTo(-1, -8); ctx.lineTo(-1 + wob2 * 0.7, -4.5); ctx.moveTo(1, -8); ctx.lineTo(1 - wob2 * 0.7, -4.5); ctx.stroke();
       ctx.restore();
     }
-    bannerButton(G.level + 1 >= LEVELS.length ? 'FINISH  ·  SPACE' : 'NEXT LEVEL  ·  SPACE', L.rim);
+    bannerButton((G.level + 1 >= LEVELS.length ? 'FINISH' : 'NEXT LEVEL') + (TOUCH ? '' : '  ·  SPACE'), L.rim);
   }
   if (G.mode === 'lost') {
     banner('TOO FEW SAVED', '#ff4545', `SAVED ${G.saved} — NEEDED ${L.quota}`);
@@ -835,7 +839,7 @@ function draw() {
       ctx.globalAlpha = 1;
       ctx.restore();
     }
-    bannerButton('RETRY  ·  SPACE', '#ff4545');
+    bannerButton(TOUCH ? 'RETRY' : 'RETRY  ·  SPACE', '#ff4545');
   }
   ctx.restore();
   ctx.drawImage(VIGNETTE, 0, 0, W, H);
@@ -1127,7 +1131,8 @@ function drawMarquee(L) {
     ctx.font = '600 10px Verdana, sans-serif';
     ctx.letterSpacing = '1px';
     ctx.fillStyle = 'rgba(200,225,250,0.9)';
-    ctx.fillText('PICK A SKILL BELOW · CLICK A NEONLING TO ASSIGN IT · A/D OR SCREEN EDGE SCROLLS', W / 2, MQ + 16);
+    ctx.fillText(TOUCH ? 'PICK A SKILL BELOW · TAP A NEONLING TO ASSIGN IT · DRAG TO SCROLL'
+                       : 'PICK A SKILL BELOW · CLICK A NEONLING TO ASSIGN IT · A/D OR SCREEN EDGE SCROLLS', W / 2, MQ + 16);
     ctx.letterSpacing = '0px';
     ctx.globalAlpha = 1;
   }
@@ -1379,14 +1384,20 @@ function drawTitle() {
   ctx.letterSpacing = '3px';
   ctx.fillStyle = '#ffffff';
   ctx.shadowColor = '#33d6ff'; ctx.shadowBlur = 12;
-  ctx.fillText('PRESS SPACE TO START', W / 2, ly + 122);
+  ctx.fillText(TOUCH ? 'TAP TO START' : 'PRESS SPACE TO START', W / 2, ly + 122);
   ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  if (TOUCH && window.innerHeight > window.innerWidth) {
+    ctx.font = '600 13px Verdana, sans-serif';
+    ctx.letterSpacing = '2px';
+    ctx.fillStyle = 'rgba(255,209,42,0.9)';
+    ctx.fillText('ROTATE YOUR PHONE FOR A BIGGER VIEW', W / 2, ly + 150);
+  }
   ctx.font = '600 13px Verdana, sans-serif';
   ctx.letterSpacing = '3px';
   ctx.fillStyle = 'rgba(180,210,235,0.95)';
   ctx.fillText('THEY MARCH. THEY FALL. THEY TRUST YOU. SAVE THE QUOTA.', W / 2, 470);
   ctx.fillStyle = 'rgba(160,190,220,0.85)';
-  ctx.fillText('PICK A SKILL · CLICK A NEONLING · EVERY LEVEL HAS A PROVEN SOLUTION', W / 2, 498);
+  ctx.fillText(`PICK A SKILL · ${TOUCH ? 'TAP' : 'CLICK'} A NEONLING · EVERY LEVEL HAS A PROVEN SOLUTION`, W / 2, 498);
   ctx.letterSpacing = '0px';
   ctx.restore();
   ctx.drawImage(VIGNETTE, 0, 0, W, H);
@@ -1404,11 +1415,7 @@ window.addEventListener('keydown', e => {
   if (k === 'p' && !e.repeat) G.paused = !G.paused;
   if (k === '=' || k === '+') G.rateBoost = true;
   if (k === '-') G.rateBoost = false;
-  if (k === 'n' && !G.nuked) {
-    G.nuked = true;
-    let d2 = 0;
-    for (const l of G.lings) if (l.state !== 'dead' && l.state !== 'saved' && l.bomberT < 0) { l.bomberT = 5 + d2; d2 += 0.15; }
-  }
+  if (k === 'n') doNuke();
   const idx = Number(e.key) - 1;
   if (idx >= 0 && idx < SKILLS.length) G.selSkill = SKILLS[idx];
 });
@@ -1434,32 +1441,81 @@ function bannerAdvance() {
     else loadLevel(G.level + 1);
   } else if (G.mode === 'lost') loadLevel(G.level);
 }
-canvas.addEventListener('mousedown', e => {
+function doNuke() {
+  if (G.nuked) return;
+  G.nuked = true;
+  let d2 = 0;
+  for (const l of G.lings) if (l.state !== 'dead' && l.state !== 'saved' && l.bomberT < 0) { l.bomberT = 5 + d2; d2 += 0.15; }
+}
+function canvasXY(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return [(clientX - r.left) * (W / r.width), (clientY - r.top) * (H / r.height)];
+}
+function pointerDown(px, py, touch) {
   audio();
+  mouse.x = px; mouse.y = py;
   if (G.showTitle) { G.showTitle = false; newGame((Math.random() * 1e9) >>> 0, false); return; }
   if ((G.mode === 'won' || G.mode === 'lost') && G.modeT > 0.6) {
+    const m = touch ? 30 : 0;          // forgiving banner-button target for fingers
     const bw2 = 250, bh2 = 40, bx2 = W / 2 - bw2 / 2, by2 = H / 2 + 76;
-    if (mouse.x > bx2 && mouse.x < bx2 + bw2 && mouse.y > by2 && mouse.y < by2 + bh2) { bannerAdvance(); return; }
+    if (px > bx2 - m && px < bx2 + bw2 + m && py > by2 - m && py < by2 + bh2 + m) { bannerAdvance(); return; }
   }
   const HY = H - HUD_H;
-  if (mouse.y > HY) {
+  if (py > HY) {
+    const sl = touch ? 5 : 0;          // touch slop bridges the palette gaps
     SKILLS.forEach((s, i) => {
       const bx = 24 + i * 92;
-      if (mouse.x > bx && mouse.x < bx + 82 && (G.pool[s] || 0) > 0) G.selSkill = s;
+      if (px > bx - sl && px < bx + 82 + sl && (G.pool[s] || 0) > 0) G.selSkill = s;
     });
+    // control rows: tap the drawn P PAUSE / +- RATE / N NUKE keycaps
+    if (px > 1165) {
+      const row = Math.round((py - (HY + 40)) / 21);
+      if (row === 0) G.paused = !G.paused;
+      else if (row === 1) G.rateBoost = !G.rateBoost;
+      else if (row === 2) doNuke();
+    }
     return;
   }
   if (G.mode !== 'play') return;
-  // click a neonling: nearest within 20px
-  const wx = mouse.x + G.cam, wy = mouse.y - MQ;
-  let best = null, bd = 24;
+  // click a neonling: nearest within reach (fingers get a wider reach than a cursor)
+  const wx = px + G.cam, wy = py - MQ;
+  let best = null, bd = touch ? 44 : 24;
   for (const l of G.lings) {
     if (l.state === 'dead' || l.state === 'saved') continue;
     const d = Math.hypot(l.x - wx, l.y - 8 - wy);
     if (d < bd) { bd = d; best = l; }
   }
   if (best) assignSkill(best, G.selSkill);
-});
+}
+canvas.addEventListener('mousedown', () => pointerDown(mouse.x, mouse.y, false));
+// touch: tap = pointerDown with fat-finger radius, drag = camera scroll
+let tGes = null;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  touchMode = true;
+  audio();                             // unlock audio on first touch
+  const t = e.changedTouches[0];
+  const [px, py] = canvasXY(t.clientX, t.clientY);
+  tGes = { x: px, y: py, cam: G.cam, moved: false };
+  mouse.x = px; mouse.y = py;
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (!tGes) return;
+  const t = e.changedTouches[0];
+  const [px, py] = canvasXY(t.clientX, t.clientY);
+  if (Math.abs(px - tGes.x) > 12 || Math.abs(py - tGes.y) > 12) tGes.moved = true;
+  if (tGes.moved && tGes.y < H - HUD_H && G && !G.showTitle) G.cam = clamp(tGes.cam - (px - tGes.x), 0, LW - VW);
+  mouse.x = px; mouse.y = py;
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (!tGes) return;
+  const t = e.changedTouches[0];
+  const [px, py] = canvasXY(t.clientX, t.clientY);
+  if (!tGes.moved) pointerDown(px, py, true);
+  tGes = null;
+}, { passive: false });
 
 // ---------- main loop ----------
 let last = 0, acc = 0;
